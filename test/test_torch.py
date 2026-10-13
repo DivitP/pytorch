@@ -3361,9 +3361,10 @@ class TestTorchDeviceType(TestCase):
     # FIXME: move to data movement test suite
     @onlyNativeDeviceTypes
     @dtypes(torch.int64, torch.float32, torch.complex64)
-    def test_copy_transpose_math_view(self, device, dtype):
-        src = make_tensor((100, 100), dtype=dtype, device=device).transpose(0, 1)
-        dst = torch.empty((100, 100), dtype=dtype, device=device)
+    @parametrize("shape", [(100, 100), (257, 263)])
+    def test_copy_transpose_math_view(self, device, dtype, shape):
+        src = make_tensor(shape, dtype=dtype, device=device).transpose(0, 1)
+        dst = torch.empty(src.shape, dtype=dtype, device=device)
 
         dst._neg_view().copy_(src)
         self.assertEqual(dst, -src)
@@ -3379,6 +3380,23 @@ class TestTorchDeviceType(TestCase):
             self.assertEqual(dst, src)
             dst.copy_(src.conj())
             self.assertEqual(dst, src.conj_physical())
+
+    @onlyCPU
+    @dtypes(*all_types_and_complex_and(torch.half, torch.bfloat16, torch.bool, torch.complex32))
+    @parametrize("shape", [(59, 60), (60, 60), (61, 61), (120, 120), (121, 121),
+                          (257, 263), (720, 720), (2, 32769), (32769, 2)])
+    def test_copy_transpose_tiles(self, device, dtype, shape):
+        rows, cols = shape
+        storage = make_tensor((rows * cols + 2,), dtype=dtype, device=device)
+        src = storage[1:-1].view(cols, rows).t()
+        dst_storage = torch.zeros(rows * cols + 2, dtype=dtype, device=device)
+        dst = dst_storage[1:-1].view(rows, cols)
+
+        dst.copy_(src)
+
+        self.assertEqual(dst, src, atol=0, rtol=0)
+        self.assertEqual(dst_storage[0], 0)
+        self.assertEqual(dst_storage[-1], 0)
 
     def test_clone_all_dtypes_and_devices(self, device):
         for dt in all_types_and_complex_and(torch.half, torch.bool, torch.bfloat16):

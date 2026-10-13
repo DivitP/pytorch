@@ -80,7 +80,7 @@ void copy_same_type_transpose_(Tensor& self, const Tensor& src) {
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers)
     BLOCK_SZ = 60;
   }
-  Tensor buf = empty({BLOCK_SZ, BLOCK_SZ}, self.options());
+  Tensor buf = empty({at::get_num_threads(), BLOCK_SZ, BLOCK_SZ}, self.options());
 
   // The code below is implemented with the assumption that sizes are equal
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(self.sizes().equals(src.sizes()));
@@ -88,12 +88,20 @@ void copy_same_type_transpose_(Tensor& self, const Tensor& src) {
   _AT_DISPATCH_CP_TYPES(self.scalar_type(), "copy_", [&] {
     const scalar_t* sp = src.const_data_ptr<scalar_t>();
     scalar_t* rp = self.data_ptr<scalar_t>();
-    scalar_t* bp = buf.data_ptr<scalar_t>();
+    scalar_t* buffer_data = buf.data_ptr<scalar_t>();
 
     int64_t NR = src.size(0);
     int64_t NC = src.size(1);
-    for (int64_t R = 0; R < NR; R += BLOCK_SZ) {
-      for (int64_t C = 0; C < NC; C += BLOCK_SZ) {
+    int64_t row_blocks = at::divup(NR, BLOCK_SZ);
+    int64_t col_blocks = at::divup(NC, BLOCK_SZ);
+    int64_t grain_size = at::divup(
+        at::internal::GRAIN_SIZE,
+        std::min(NR, BLOCK_SZ) * std::min(NC, BLOCK_SZ));
+    at::parallel_for(0, row_blocks * col_blocks, grain_size, [&](int64_t begin, int64_t end) {
+      scalar_t* bp = buffer_data + at::get_thread_num() * BLOCK_SZ * BLOCK_SZ;
+      for (const auto block : c10::irange(begin, end)) {
+        int64_t R = (block / col_blocks) * BLOCK_SZ;
+        int64_t C = (block % col_blocks) * BLOCK_SZ;
         const scalar_t* spo = sp + R + C * NR;
         scalar_t* rpo = rp + C + R * NC;
 
@@ -122,7 +130,7 @@ void copy_same_type_transpose_(Tensor& self, const Tensor& src) {
           memcpy(rpo + r * NC, bp + r * BLOCK_SZ, nc * sizeof(scalar_t));
         }
       }
-    }
+    });
   });
 }
 
